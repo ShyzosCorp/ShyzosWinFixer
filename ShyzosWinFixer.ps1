@@ -14,6 +14,7 @@
       .\ShyzosWinFixer.ps1 -Standby   # vide aussi le cache en attente
       .\ShyzosWinFixer.ps1 -NoWsl     # ne touche pas à WSL
       .\ShyzosWinFixer.ps1 -Plain     # sans animation
+      .\ShyzosWinFixer.ps1 -NoStats   # n'enregistre pas l'XP / le grade
 
     Compatible Windows PowerShell 5.1 et PowerShell 7. Rien n'est installé.
 #>
@@ -25,10 +26,13 @@ function Invoke-ShyzosWinFixer {
         [switch]$NoWsl,
         [switch]$NoPause,
         [switch]$Plain,
+        [switch]$NoStats,
+        [ValidateSet('zombie', 'tactique')]
+        [string]$Theme = 'zombie',
         [switch]$Elevated
     )
 
-    $version = '1.1.1'
+    $version = '1.2.0'
 
     # ======================================================================
     #  Fonctions natives (Windows)
@@ -93,70 +97,137 @@ namespace ShyzosWinFixer {
     }
 
     # ======================================================================
-    #  Interface : animations si la console le permet, texte simple sinon
+    #  Interface animée + thèmes ("zombie" par défaut, ou "tactique")
+    #  (pièges PowerShell évités : pas de variable $e car $e = $E ; Min/Max avec des doubles)
     # ======================================================================
     $anim = (-not $Plain) -and (-not [Console]::IsOutputRedirected)
     if ($anim) { try { $anim = [ShyzosWinFixer.Con]::EnableVT() } catch { $anim = $false } }
     $wt = [bool]$env:WT_SESSION   # Windows Terminal : police avec plus de symboles
 
-    $E    = [char]27
-    $RST  = "$E[0m"
-    $DIM  = "$E[38;2;120;128;150m"
-    $BOLD = "$E[1m"
-    $GRN  = "$E[38;2;74;222;128m"
-    $YEL  = "$E[38;2;250;204;21m"
-    $RED  = "$E[38;2;248;113;113m"
-    $WHT  = "$E[38;2;255;255;255m"
+    $ESC = [char]27
+    function Get-Rgb([int]$red, [int]$green, [int]$blue) { "$ESC[38;2;$red;$green;${blue}m" }
+    $RST  = "$ESC[0m"
+    $BOLD = "$ESC[1m"
+    $WHT  = Get-Rgb 255 255 255
+    $RED  = Get-Rgb 255 60 60
+    $ORG  = Get-Rgb 255 128 32
 
+    # Windows Terminal a une police riche ; la console classique n'affiche pas ► ▲ … ★ ☠ (vérifié)
     if ($wt) {
         $SPIN = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
-        $SYM  = @{ ok = '✔'; warn = '⚠'; err = '✖'; star = '✦'; dot = '·' }
+        $SYM  = @{ hit = '✕'; star = '★'; warn = '⚠'; up = '▲'; cut = '…'; skull = '☠'; bio = '☣' }
+        $ARW  = '►'
     } else {
         $SPIN = @('|','/','-','\')
-        $SYM  = @{ ok = '+'; warn = '!'; err = 'x'; star = '*'; dot = '-' }
+        $SYM  = @{ hit = 'x'; star = '*'; warn = '!'; up = '^'; cut = '~'; skull = 'x'; bio = '!' }
+        $ARW  = '»'
     }
 
-    # Dégradé cyan -> indigo -> magenta (64 nuances pré-calculées)
+    if ($Theme -eq 'tactique') {
+        $AMB   = Get-Rgb 255 184 28      # couleur d'accent (ambre HUD)
+        $GRN   = Get-Rgb 120 230 100     # succès
+        $DIM   = Get-Rgb 128 128 114
+        $DRK   = Get-Rgb 62 64 56
+        $stops = @(@(255,214,10), @(255,140,0), @(255,58,40))      # or -> orange -> rouge
+        $T = @{
+            subtitle   = 'OPÉRATION RAM PURGE'
+            plainTitle = 'opération RAM PURGE'
+            briefTitle = ' BRIEFING '
+            rows       = @('OPÉRATION', 'OBJECTIF', 'CIBLES', 'RAM', 'HEURE')
+            rowVals    = @('RAM PURGE', 'libérer la RAM sans rien fermer', '{0} processus', '{0:N1} / {1:N1} Go utilisés')
+            alertTag   = "$($SYM.warn) ALERTE"
+            countdown  = "DÉBUT DE L'OPÉRATION DANS"
+            go         = 'GO GO GO'
+            killTitle  = 'CIBLES NEUTRALISÉES'
+            killNone   = 'aucune cible significative'
+            killMark   = $SYM.hit
+            firstTag   = ''
+            banner     = 'M I S S I O N   A C C O M P L I E'
+            bannerPlain= 'MISSION ACCOMPLIE'
+            streakLbl  = 'SÉRIE'
+            streaks    = @(@(8, 'FRAPPE MAXIMALE', 'red'), @(4, 'RAFALE DÉVASTATRICE', 'org'), @(2, 'DOUBLE PURGE', 'acc'), @(0.5, 'PURGE RÉUSSIE', 'ok'), @(-999, 'RECONNAISSANCE', 'dim'))
+            report     = ' RAPPORT DE MISSION '
+            repGain    = 'Mémoire récupérée'
+            repCount   = 'Cibles neutralisées'
+            repTime    = "Durée de l'opération"
+            gradeLbl   = 'GRADE'
+            ranks      = @('RECRUE', 'SOLDAT', 'CAPORAL', 'SERGENT', 'LIEUTENANT', 'CAPITAINE', 'COMMANDANT', 'COLONEL', 'GÉNÉRAL', 'LÉGENDE')
+            total      = '{0} opération(s) · {1:N1} Go récupérés au total'
+            outro      = "$($SYM.star) FIN DE TRANSMISSION $($SYM.star) SHYZOS WIN FIXER"
+            noise      = '▓▒░#%&@$'
+        }
+    } else {
+        $AMB   = Get-Rgb 120 255 60      # couleur d'accent (vert toxique)
+        $GRN   = Get-Rgb 150 255 90      # succès
+        $DIM   = Get-Rgb 120 132 112
+        $DRK   = Get-Rgb 52 66 48
+        $stops = @(@(140,255,40), @(200,210,30), @(210,25,25))     # vert toxique -> jaune malade -> rouge sang
+        $T = @{
+            subtitle   = 'SURVIE : LA HORDE DE LA RAM'
+            plainTitle = 'survie face à la horde de la RAM'
+            briefTitle = ' DOSSIER INFECTION '
+            rows       = @('ZONE', 'MISSION', 'HORDE', 'INFECTION', 'HEURE')
+            rowVals    = @('mémoire vive', 'survivre sans rien fermer', '{0} processus infectés', '{0:N1} / {1:N1} Go contaminés')
+            alertTag   = "$($SYM.bio) ALERTE"
+            countdown  = 'LA HORDE ARRIVE DANS'
+            go         = 'VAGUE {0} : SURVIS !'
+            killTitle  = 'ZOMBIES ÉLIMINÉS'
+            killNone   = 'aucun zombie en vue'
+            killMark   = $SYM.skull
+            firstTag   = 'HEADSHOT'
+            banner     = 'V A G U E   S U R V É C U E'
+            bannerPlain= 'VAGUE SURVÉCUE'
+            streakLbl  = 'SÉRIE'
+            streaks    = @(@(8, 'EXTINCTION DE LA HORDE', 'red'), @(4, 'CARNAGE', 'org'), @(2, 'MASSACRE', 'acc'), @(0.5, 'BONNE CHASSE', 'ok'), @(-999, 'SURVIE TRANQUILLE', 'dim'))
+            report     = ' RAPPORT DE SURVIE '
+            repGain    = 'Mémoire sauvée'
+            repCount   = 'Zombies éliminés'
+            repTime    = 'Durée de la vague'
+            gradeLbl   = 'RANG'
+            ranks      = @('SURVIVANT', 'ÉCLAIREUR', 'CHASSEUR', 'TRAQUEUR', 'VÉTÉRAN', 'SENTINELLE', 'NETTOYEUR', 'FLÉAU DES MORTS', 'DERNIER REMPART', "LÉGENDE DE L'APOCALYPSE")
+            total      = '{0} vague(s) survécue(s) · {1:N1} Go sauvés au total'
+            outro      = "$($SYM.skull) FIN DE LA VAGUE $($SYM.skull) SHYZOS WIN FIXER"
+            noise      = '▓▒░#%&@§'
+        }
+    }
+
+    # Dégradé du thème (64 nuances pré-calculées)
     $GRAD = New-Object 'string[]' 64
-    $stops = @(@(0,229,255), @(110,99,255), @(217,70,239))
     for ($k = 0; $k -lt 64; $k++) {
-        $t = $k / 63.0
-        if ($t -lt 0.5) { $u = $t * 2; $p = $stops[0]; $q = $stops[1] } else { $u = ($t - 0.5) * 2; $p = $stops[1]; $q = $stops[2] }
-        $r = [int]($p[0] + ($q[0] - $p[0]) * $u)
-        $g = [int]($p[1] + ($q[1] - $p[1]) * $u)
-        $b = [int]($p[2] + ($q[2] - $p[2]) * $u)
-        $GRAD[$k] = "$E[38;2;$r;$g;${b}m"
+        $tt = $k / 63.0
+        if ($tt -lt 0.5) { $u = $tt * 2; $p = $stops[0]; $q = $stops[1] } else { $u = ($tt - 0.5) * 2; $p = $stops[1]; $q = $stops[2] }
+        $GRAD[$k] = Get-Rgb ([int]($p[0] + ($q[0] - $p[0]) * $u)) ([int]($p[1] + ($q[1] - $p[1]) * $u)) ([int]($p[2] + ($q[2] - $p[2]) * $u))
     }
 
     function Out-Raw([string]$text) { [Console]::Write($text) }
+    function Get-Ease([double]$x) { 1 - [math]::Pow(1 - $x, 3) }   # easeOutCubic
 
-    function Get-Painted([string]$text, [int]$shine = -100) {
+    function Get-Painted([string]$text) {
         $sb = New-Object Text.StringBuilder
         $n = [math]::Max(1, $text.Length - 1)
         for ($i = 0; $i -lt $text.Length; $i++) {
             $ch = $text[$i]
             if ($ch -eq ' ') { [void]$sb.Append(' '); continue }
-            $dist = [math]::Abs($i - $shine)
-            if ($dist -le 1)     { [void]$sb.Append($WHT) }
-            elseif ($dist -le 3) { [void]$sb.Append("$E[38;2;200;235;255m") }
-            else                 { [void]$sb.Append($GRAD[[int](($i / $n) * 63)]) }
-            [void]$sb.Append($ch)
+            [void]$sb.Append($GRAD[[int](($i / $n) * 63)]); [void]$sb.Append($ch)
         }
         [void]$sb.Append($RST)
         $sb.ToString()
     }
 
     function Get-Bar([double]$frac, [int]$width) {
-        # 0.0 / 1.0 (et pas 0 / 1) : sinon PowerShell choisit la version "entiers" de Min/Max et arrondit
         $frac = [math]::Min([double]1.0, [math]::Max([double]0.0, $frac))
         $full = [int][math]::Round($frac * $width)
         $sb = New-Object Text.StringBuilder
         for ($i = 0; $i -lt $width; $i++) {
             if ($i -lt $full) { [void]$sb.Append($GRAD[[int](($i / [math]::Max(1, $width - 1)) * 63)] + '█') }
-            else              { [void]$sb.Append("$E[38;2;55;60;80m" + '░') }
+            else              { [void]$sb.Append($DRK + '░') }
         }
         [void]$sb.Append($RST)
         $sb.ToString()
+    }
+
+    function Format-Size([double]$mb) {
+        if ($mb -ge 1024) { '{0:N1} Go' -f ($mb / 1024) } else { '{0:N0} Mo' -f $mb }
     }
 
     $LOGO = @(
@@ -167,37 +238,90 @@ namespace ShyzosWinFixer {
         '███████║██║  ██║   ██║   ███████╗╚██████╔╝███████║',
         '╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚══════╝'
     )
+    $logoW = $LOGO[0].Length
 
+    function Get-Centered([string]$text, [int]$width) { (' ' * [math]::Max(0, [int](($width - $text.Length) / 2))) + $text }
+
+    # --- Logo : "décryptage" depuis du bruit, puis flash de verrouillage ---
     function Show-Banner {
         if (-not $anim) {
             Write-Host ''
-            Write-Host "  ShyzosWinFixer v$version - vidage de RAM" -ForegroundColor Magenta
-            Write-Host '  ----------------------------------------' -ForegroundColor DarkGray
+            Write-Host "  SHYZOS WIN FIXER v$version - $($T.plainTitle)" -ForegroundColor $(if ($Theme -eq 'zombie') { 'Green' } else { 'Yellow' })
+            Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
             return
         }
+        $rng = New-Object Random
+        $noise = $T.noise.ToCharArray()
+        $flash = if ($Theme -eq 'zombie') { Get-Rgb 255 40 40 } else { $WHT }     # zombie : flash rouge sang
+        $front2 = if ($Theme -eq 'zombie') { $AMB } else { $WHT }               # bord de la "contamination"
+        $frames = 16
         Out-Raw "`n"
-        foreach ($line in $LOGO) {                       # apparition ligne par ligne
-            Out-Raw ('  ' + (Get-Painted $line) + "`n")
-            Start-Sleep -Milliseconds 35
-        }
-        $w = $LOGO[0].Length
-        for ($s = -4; $s -le $w + 4; $s += 4) {          # reflet qui balaie le logo
-            $frame = New-Object Text.StringBuilder
-            [void]$frame.Append("$E[$($LOGO.Count)A")
-            foreach ($line in $LOGO) { [void]$frame.Append("`r  " + (Get-Painted $line $s) + "`n") }
-            Out-Raw $frame.ToString()
-            Start-Sleep -Milliseconds 16
+        for ($f = 0; $f -le $frames + 2; $f++) {
+            $front = [int](($f / $frames) * ($logoW + 10)) - 5
+            $sb = New-Object Text.StringBuilder
+            if ($f -gt 0) { [void]$sb.Append("$ESC[$($LOGO.Count)A") }
+            foreach ($line in $LOGO) {
+                [void]$sb.Append("`r  ")
+                for ($i = 0; $i -lt $line.Length; $i++) {
+                    $ch = $line[$i]
+                    if ($ch -eq ' ') { [void]$sb.Append(' '); continue }
+                    if ($f -eq $frames + 1)      { [void]$sb.Append($flash + $ch) }                  # flash
+                    elseif ($i -lt $front)       { [void]$sb.Append($GRAD[[int](($i / ($logoW - 1)) * 63)] + $ch) }
+                    elseif ($i -lt $front + 5)   { [void]$sb.Append($front2 + $noise[$rng.Next($noise.Length)]) }
+                    else                         { [void]$sb.Append($DRK + $noise[$rng.Next($noise.Length)]) }
+                }
+                [void]$sb.Append("$RST$ESC[K`n")
+            }
+            Out-Raw $sb.ToString()
+            Start-Sleep -Milliseconds $(if ($f -eq $frames + 1) { 60 } else { 22 })
         }
         $sub = 'W  I  N     F  I  X  E  R'
-        $pad = ' ' * [math]::Max(0, [int](($w - $sub.Length) / 2))
-        Out-Raw ('  ' + $pad + (Get-Painted $sub) + "`n")
-        Out-Raw ("  $DIM" + (' ' * [math]::Max(0, [int](($w - 36) / 2))) + "v$version $($SYM.dot) vidage de RAM sans rien fermer$RST`n`n")
+        Out-Raw ('  ' + (' ' * [math]::Max(0, [int](($logoW - $sub.Length) / 2))) + (Get-Painted $sub) + "`n")
+        Out-Raw ("  $DIM" + (Get-Centered "v$version · $($T.subtitle)" $logoW) + "$RST`n`n")
     }
 
-    # Lance un bloc en arrière-plan et anime un spinner pendant qu'il tourne
+    # --- Texte tapé à la machine (par paquets, pour rester rapide) ---
+    function Write-Typed([string]$text, [string]$color) {
+        $chunk = [math]::Max(1, [int][math]::Ceiling($text.Length / 7.0))
+        for ($i = 0; $i -lt $text.Length; $i += $chunk) {
+            Out-Raw ($color + $text.Substring($i, [math]::Min($chunk, $text.Length - $i)) + $RST)
+            Start-Sleep -Milliseconds 14
+        }
+    }
+
+    # --- Briefing de mission ---
+    function Show-Briefing($rows) {
+        if (-not $anim) {
+            foreach ($row in $rows) { Write-Host ('  {0,-11}: {1}' -f $row[0], $row[1]) }
+            return
+        }
+        $boxW = 60
+        $title = $T.briefTitle
+        Out-Raw ("  $DRK┌─$RST$AMB$BOLD$title$RST$DRK" + ('─' * ($boxW - $title.Length - 1)) + "┐$RST`n")
+        foreach ($row in $rows) {
+            $label = '{0,-11}' -f $row[0]
+            Out-Raw ("  $DRK│$RST  $DIM$label$RST${DRK}: $RST")
+            Write-Typed $row[1] $row[2]
+            Out-Raw ((' ' * [math]::Max(0, $boxW - (15 + $row[1].Length))) + "$DRK│$RST`n")
+        }
+        Out-Raw ("  $DRK└" + ('─' * $boxW) + "┘$RST`n")
+    }
+
+    function Show-Countdown {
+        if (-not $anim) { Write-Host ''; return }
+        Out-Raw "`n"
+        foreach ($n in '3', '2', '1') {
+            Out-Raw ("`r  $AMB$BOLD$ARW $($T.countdown) $WHT$n$RST$ESC[K")
+            Start-Sleep -Milliseconds 220
+        }
+        $goColor = if ($Theme -eq 'zombie') { $RED } else { $GRN }
+        Out-Raw ("`r  $goColor$BOLD$ARW " + ($T.go -f $wave) + "$RST$ESC[K`n`n")
+    }
+
+    # --- Étapes : le travail tourne en arrière-plan pendant que le spinner tourne ---
     function Invoke-Step([string]$label, [scriptblock]$script, $argument) {
         if (-not $anim) {
-            Write-Host "  > $label" -ForegroundColor Cyan
+            Write-Host "  [ .. ] $label"
             return (& $script $argument)
         }
         $ps = [PowerShell]::Create()
@@ -205,34 +329,26 @@ namespace ShyzosWinFixer {
         $handle = $ps.BeginInvoke()
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $i = 0
-        while (-not $handle.IsCompleted -or $sw.ElapsedMilliseconds -lt 500) {
+        while (-not $handle.IsCompleted -or $sw.ElapsedMilliseconds -lt 450) {
             $dots = '.' * ([int]($i / 3) % 4)
-            Out-Raw ("`r  " + $GRAD[($i * 4) % 64] + $SPIN[$i % $SPIN.Count] + "$RST $label$DIM$dots$RST$E[K")
+            Out-Raw ("`r  $DRK[$RST $AMB" + $SPIN[$i % $SPIN.Count] + "$RST  $DRK]$RST $label$DIM$dots$RST$ESC[K")
             Start-Sleep -Milliseconds 70
             $i++
         }
         try { $out = $ps.EndInvoke($handle) } finally { $ps.Dispose() }
-        # Attention : une collection qui contient seulement 0 est "fausse" en PowerShell,
-        # donc on teste $null et Count explicitement.
+        # Une collection qui contient seulement 0 est "fausse" en PowerShell : on teste $null et Count
         if ($null -ne $out -and $out.Count -gt 0) { return $out[$out.Count - 1] }
         return $null
     }
 
     function Complete-Step([string]$state, [string]$text) {
-        if (-not $anim) {
-            switch ($state) {
-                'ok'   { Write-Host "  + $text" -ForegroundColor Green }
-                'warn' { Write-Host "  ! $text" -ForegroundColor Yellow }
-                default { Write-Host "  x $text" -ForegroundColor Red }
-            }
-            return
-        }
         switch ($state) {
-            'ok'   { $c = $GRN; $s = $SYM.ok }
-            'warn' { $c = $YEL; $s = $SYM.warn }
-            default { $c = $RED; $s = $SYM.err }
+            'ok'    { $tag = ' OK '; $c = $GRN; $cc = 'Green' }
+            'warn'  { $tag = 'WARN'; $c = $AMB; $cc = 'Yellow' }
+            default { $tag = 'FAIL'; $c = $RED; $cc = 'Red' }
         }
-        Out-Raw ("`r  $c$s$RST $text$E[K`n")
+        if (-not $anim) { Write-Host "  [$tag] $text" -ForegroundColor $cc; return }
+        Out-Raw ("`r  $DRK[$RST$c$BOLD$tag$RST$DRK]$RST $text$ESC[K`n")
     }
 
     function Show-Note([string]$state, [string]$text) {
@@ -240,9 +356,187 @@ namespace ShyzosWinFixer {
             if ($state -eq 'warn') { Write-Host "  ! $text" -ForegroundColor Yellow } else { Write-Host "  $text" }
             return
         }
-        $c = if ($state -eq 'warn') { $YEL } else { $DIM }
-        $s = if ($state -eq 'warn') { $SYM.warn } else { $SYM.dot }
-        Out-Raw ("  $c$s $text$RST`n")
+        if ($state -eq 'warn') { Out-Raw ("  $RED$BOLD$($T.alertTag)$RST $AMB$text$RST`n") }
+        else { Out-Raw ("  $DIM$ARW $text$RST`n") }
+    }
+
+    # --- Kill feed : les vrais processus qui ont libéré le plus de RAM ---
+    function Show-Killfeed($targets, [int]$count) {
+        if (-not $anim) {
+            Write-Host ''
+            Write-Host "  $($T.killTitle) : $count"
+            foreach ($tg in $targets) { Write-Host ('    {0,-24} -{1}' -f $tg.Name, (Format-Size $tg.Freed)) }
+            return
+        }
+        $title = " $($T.killTitle) : $count "
+        Out-Raw ("`n  $DRK──$RST$AMB$BOLD$title$RST$DRK" + ('─' * [math]::Max(0, 46 - $title.Length)) + "$RST`n")
+        if (-not $targets) { Out-Raw "  $DIM$ARW $($T.killNone)$RST`n"; return }
+        $mark = $T.killMark
+        $first = $true
+        foreach ($tg in $targets) {
+            $nm = [string]$tg.Name
+            if ($nm.Length -gt 22) { $nm = $nm.Substring(0, 21) + $SYM.cut }
+            $lead = '·' * [math]::Max(2, 26 - $nm.Length)
+            $amt = ('-' + (Format-Size $tg.Freed)).PadLeft(9)
+            $base = "`r  $AMB$ARW$RST $WHT$nm$RST $DRK$lead$RST "
+            $tag = if ($first) { "  $RED$BOLD$($T.firstTag)$RST" } else { '' }
+            Out-Raw ($base + "$RED$BOLD$mark$RST  $WHT$BOLD$amt$RST$ESC[K")       # hitmarker
+            Start-Sleep -Milliseconds $(if ($first) { 140 } else { 70 })
+            Out-Raw ($base + "$DIM$mark$RST  $AMB$amt$RST$tag$ESC[K`n")
+            Start-Sleep -Milliseconds 35
+            $first = $false
+        }
+    }
+
+    # --- "MISSION ACCOMPLIE" qui se déploie depuis le centre ---
+    function Show-MissionBanner([string]$streak, [string]$streakColor) {
+        if (-not $anim) {
+            Write-Host ''
+            Write-Host "  $($T.bannerPlain)" -ForegroundColor Green
+            Write-Host "  $($T.streakLbl) : $streak"
+            return
+        }
+        $text = $T.banner
+        $bw = 52
+        $half = [int]($bw / 2)
+        $tpad = ' ' * [math]::Max(0, [int](($bw - $text.Length) / 2))
+        Out-Raw "`n`n`n`n"
+        $steps = 9
+        for ($s = 0; $s -le $steps + 6; $s++) {
+            $k = [int]([math]::Min([double]1.0, $s / [double]$steps) * $half)
+            $line = (' ' * ($half - $k)) + ('═' * (2 * $k))
+            $shown = $text.Substring(0, [int]($text.Length * [math]::Min([double]1.0, $s / [double]$steps)))
+            if ($s -gt $steps) { $tc = $(if ($s % 2 -eq 0) { $WHT } else { $GRN }) } else { $tc = $WHT }   # flash
+            Out-Raw ("$ESC[3A`r  $AMB$line$RST$ESC[K`n`r  $tc$BOLD$tpad$shown$RST$ESC[K`n`r  $AMB$line$RST$ESC[K`n")
+            Start-Sleep -Milliseconds $(if ($s -gt $steps) { 70 } else { 20 })
+        }
+        Out-Raw ("$ESC[2A`r  $GRN$BOLD$tpad$text$RST$ESC[K`n$ESC[1B")
+        $sl = "$ARW $($T.streakLbl) : "
+        Out-Raw ("  " + (' ' * [math]::Max(0, [int](($bw - $sl.Length - $streak.Length) / 2))) + "$DIM$sl$RST$streakColor$BOLD$streak$RST`n")
+    }
+
+    # --- Rapport de mission (barres + compteurs animés) ---
+    function Show-Report($before, $after, [int]$count, [double]$secs) {
+        $gain = $before.Used - $after.Used
+        if (-not $anim) {
+            Write-Host ''
+            Write-Host ('  Avant               : {0,5:N1} Go utilisés' -f $before.Used)
+            Write-Host ('  Après               : {0,5:N1} Go utilisés' -f $after.Used)
+            if ($gain -gt 0) { Write-Host ('  {0,-19} : {1:N1} Go' -f $T.repGain, $gain) -ForegroundColor Green }
+            else { Write-Host ('  {0,-19} : rien de plus pour le moment' -f $T.repGain) -ForegroundColor Yellow }
+            Write-Host ('  {0,-19} : {1}' -f $T.repCount, $count)
+            Write-Host ('  Durée               : {0:N1} s' -f $secs)
+            return
+        }
+        $boxW = 52
+        $title = $T.report
+        $lg = $T.repGain.PadRight(22); $lc = $T.repCount.PadRight(22); $lt = $T.repTime.PadRight(22)
+        $frames = 20
+        for ($f = 0; $f -le $frames; $f++) {
+            $ease = Get-Ease ($f / [double]$frames)
+            $bv = '{0,5:N1}' -f ($before.Used * $ease)
+            $av = '{0,5:N1}' -f ($after.Used * $ease)
+            $gv = '{0:N1}' -f ([math]::Max([double]0.0, [double]$gain) * $ease)
+            $cv = [int]($count * $ease)
+            $rows = @(
+                @(('  Avant       ' + ('x' * 24) + "  $bv Go"), ("  ${DIM}Avant$RST       " + (Get-Bar (($before.Used / $before.Total) * $ease) 24) + "  $bv Go")),
+                @(('  Après       ' + ('x' * 24) + "  $av Go"), ("  ${BOLD}Après$RST       " + (Get-Bar (($after.Used / $after.Total) * $ease) 24) + "  $BOLD$av$RST Go")),
+                @('', '')
+            )
+            if ($gain -gt 0.05) { $rows += ,@(("  $lg+ $gv Go"), ("  $DIM$lg$RST$GRN$BOLD+ $gv Go$RST")) }
+            else { $rows += ,@(("  ${lg}rien de plus pour le moment"), ("  $DIM$lg$RST${AMB}rien de plus pour le moment$RST")) }
+            $rows += ,@(("  $lc$cv"), ("  $DIM$lc$RST$WHT$cv$RST"))
+            $rows += ,@(("  $lt" + ('{0:N1} s' -f $secs)), ("  $DIM$lt$RST$WHT" + ('{0:N1} s' -f $secs) + $RST))
+            $sb = New-Object Text.StringBuilder
+            if ($f -gt 0) { [void]$sb.Append("$ESC[$($rows.Count + 2)A") }
+            [void]$sb.Append("`r  $DRK┌─$RST$AMB$BOLD$title$RST$DRK" + ('─' * ($boxW - $title.Length - 1)) + "┐$RST$ESC[K`n")
+            foreach ($row in $rows) {
+                [void]$sb.Append("`r  $DRK│$RST" + $row[1] + (' ' * [math]::Max(0, $boxW - $row[0].Length)) + "$DRK│$RST$ESC[K`n")
+            }
+            [void]$sb.Append("`r  $DRK└" + ('─' * $boxW) + "┘$RST$ESC[K`n")
+            Out-Raw $sb.ToString()
+            Start-Sleep -Milliseconds 26
+        }
+    }
+
+    # --- XP et grades (sauvegardés dans %LOCALAPPDATA%\ShyzosWinFixer\stats.json) ---
+    $xpSteps = @(0, 500, 1500, 3000, 5500, 9000, 14000, 21000, 30000, 45000)
+    $RANKS = @()
+    for ($i = 0; $i -lt $xpSteps.Count; $i++) { $RANKS += ,@($T.ranks[$i], $xpSteps[$i]) }
+
+    function Get-Stats {
+        $s = [pscustomobject]@{ xp = 0; runs = 0; totalGB = 0.0 }
+        if ($NoStats) { return $s }
+        try {
+            $file = Join-Path (Join-Path $env:LOCALAPPDATA 'ShyzosWinFixer') 'stats.json'
+            if (Test-Path $file) {
+                $o = Get-Content $file -Raw | ConvertFrom-Json
+                $s.xp = [int]$o.xp; $s.runs = [int]$o.runs; $s.totalGB = [double]$o.totalGB
+            }
+        } catch { }
+        $s
+    }
+    function Get-RankIndex([int]$xp) {
+        $idx = 0
+        for ($i = 0; $i -lt $RANKS.Count; $i++) { if ($xp -ge $RANKS[$i][1]) { $idx = $i } }
+        $idx
+    }
+
+    function Update-Stats([double]$gainGB) {
+        $gained = [int]([math]::Max([double]0.0, $gainGB) * 100) + 25      # 100 XP par Go + 25 XP de mission
+        $res = [pscustomobject]@{ OldXp = 0; NewXp = $gained; Gained = $gained; Runs = 1; TotalGB = [math]::Max([double]0.0, $gainGB) }
+        if ($NoStats) { return $res }
+        try {
+            $dir  = Join-Path $env:LOCALAPPDATA 'ShyzosWinFixer'
+            $file = Join-Path $dir 'stats.json'
+            if (Test-Path $file) {
+                $old = Get-Content $file -Raw | ConvertFrom-Json
+                $res.OldXp   = [int]$old.xp
+                $res.NewXp   = $res.OldXp + $gained
+                $res.Runs    = [int]$old.runs + 1
+                $res.TotalGB = [double]$old.totalGB + $res.TotalGB
+            }
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            @{ xp = $res.NewXp; runs = $res.Runs; totalGB = [math]::Round($res.TotalGB, 2) } | ConvertTo-Json | Set-Content -Path $file -Encoding UTF8
+        } catch { }
+        $res
+    }
+
+    function Show-Rank($st) {
+        $oldIdx = Get-RankIndex $st.OldXp
+        $newIdx = Get-RankIndex $st.NewXp
+        if (-not $anim) {
+            Write-Host ''
+            Write-Host ("  {0} : {1}  ({2} XP, +{3} XP)" -f $T.gradeLbl, $RANKS[$newIdx][0], $st.NewXp, $st.Gained)
+            if ($newIdx -gt $oldIdx) { Write-Host ("  PROMOTION : {0}" -f $RANKS[$newIdx][0]) -ForegroundColor Green }
+            return
+        }
+        Out-Raw "`n"
+        $frames = 22
+        for ($f = 0; $f -le $frames; $f++) {
+            $xp  = [int]($st.OldXp + $st.Gained * (Get-Ease ($f / [double]$frames)))
+            $idx = Get-RankIndex $xp
+            $cur = $RANKS[$idx][1]
+            $nxt = if ($idx + 1 -lt $RANKS.Count) { $RANKS[$idx + 1][1] } else { $cur + 10000 }
+            $frac = ($xp - $cur) / [double]($nxt - $cur)
+            $name = $RANKS[$idx][0]
+            $gainTxt = "+$([int]($st.Gained * (Get-Ease ($f / [double]$frames)))) XP"
+            $l1 = "  $AMB$BOLD$($SYM.star) $($T.gradeLbl) : $WHT$name$RST" + (' ' * [math]::Max(1, 40 - $name.Length - ($T.gradeLbl.Length - 5))) + "$GRN$BOLD$gainTxt$RST$ESC[K"
+            $l2 = '  ' + (Get-Bar $frac 34) + "  $DIM" + ('{0} / {1} XP' -f $xp, $nxt) + "$RST$ESC[K"
+            if ($f -gt 0) { Out-Raw "$ESC[2A" }
+            Out-Raw ("`r$l1`n`r$l2`n")
+            Start-Sleep -Milliseconds 28
+        }
+        if ($newIdx -gt $oldIdx) {
+            $promo = "$($SYM.star) PROMOTION : $($RANKS[$newIdx][0]) $($SYM.star)"
+            Out-Raw "`n"
+            for ($j = 0; $j -lt 6; $j++) {
+                $c = if ($j % 2 -eq 0) { $WHT } else { $AMB }
+                Out-Raw ("`r  $c$BOLD$($SYM.up) $promo $($SYM.up)$RST$ESC[K")
+                Start-Sleep -Milliseconds 90
+            }
+            Out-Raw "`n"
+        }
     }
 
     function Get-RamState {
@@ -257,59 +551,6 @@ namespace ShyzosWinFixer {
             if ($anim) { Out-Raw "`n  ${DIM}Appuie sur Entrée pour fermer$RST "; [void][Console]::ReadLine() }
             else { Write-Host ''; [void](Read-Host 'Appuie sur Entrée pour fermer') }
         }
-    }
-
-    function Show-Result($before, $after) {
-        $gain = $before.Used - $after.Used
-        if (-not $anim) {
-            Write-Host ''
-            Write-Host ('  Avant : {0,5:N1} Go utilisés' -f $before.Used)
-            Write-Host ('  Après : {0,5:N1} Go utilisés' -f $after.Used)
-            if ($gain -gt 0) { Write-Host ('  Gain  : {0,5:N1} Go libérés' -f $gain) -ForegroundColor Green }
-            else { Write-Host '  Gain  : rien de plus à libérer pour le moment.' -ForegroundColor Yellow }
-            Write-Host ''
-            Write-Host '  Normal : ça remonte petit à petit, chaque programme recharge ce dont il a besoin.' -ForegroundColor DarkGray
-            return
-        }
-        $W = 46
-        $border = "$E[38;2;70;76;105m"
-        # Coins arrondis seulement dans Windows Terminal (la console classique ne les affiche pas)
-        if ($wt) { $cTL = '╭'; $cTR = '╮'; $cBL = '╰'; $cBR = '╯' } else { $cTL = '┌'; $cTR = '┐'; $cBL = '└'; $cBR = '┘' }
-        $steps = 22
-        for ($f = 0; $f -le $steps; $f++) {
-            # Attention : pas de variable "$e" ici, PowerShell ne distingue pas $e de $E (caractère d'échappement)
-            $ease = 1 - [math]::Pow(1 - ($f / $steps), 3)        # easeOutCubic
-            $bv = '{0,5:N1}' -f ($before.Used * $ease)
-            $av = '{0,5:N1}' -f ($after.Used * $ease)
-            $gv = '{0:N1}' -f ([math]::Max([double]0.0, [double]$gain) * $ease)
-            $rows = @(
-                @(('  Avant    ' + ('x' * 24) + "  $bv Go"),
-                  ("  ${DIM}Avant$RST    " + (Get-Bar (($before.Used / $before.Total) * $ease) 24) + "  $bv Go")),
-                @(('  Après    ' + ('x' * 24) + "  $av Go"),
-                  ("  ${BOLD}Après$RST    " + (Get-Bar (($after.Used / $after.Total) * $ease) 24) + "  $BOLD$av$RST Go")),
-                @('', '')
-            )
-            if ($gain -gt 0.05) {
-                $rows += ,@(("  $($SYM.star) Libéré   + $gv Go"),
-                            ("  " + $GRAD[[int]($ease * 63)] + "$($SYM.star)$RST ${BOLD}Libéré$RST   $GRN$BOLD+ $gv Go$RST"))
-            } else {
-                $rows += ,@(("  $($SYM.star) Rien de plus à libérer pour l'instant"),
-                            ("  $YEL$($SYM.star) Rien de plus à libérer pour l'instant$RST"))
-            }
-            $sb = New-Object Text.StringBuilder
-            if ($f -gt 0) { [void]$sb.Append("$E[$($rows.Count + 2)A") }
-            [void]$sb.Append("`r  $border$cTL" + ('─' * $W) + "$cTR$RST$E[K`n")
-            foreach ($row in $rows) {
-                $padding = ' ' * [math]::Max(0, $W - $row[0].Length)
-                [void]$sb.Append("`r  $border│$RST" + $row[1] + $padding + "$border│$RST$E[K`n")
-            }
-            [void]$sb.Append("`r  $border$cBL" + ('─' * $W) + "$cBR$RST$E[K`n")
-            Out-Raw $sb.ToString()
-            Start-Sleep -Milliseconds 28
-        }
-        Out-Raw "`n"
-        Show-Note 'info' 'Normal : ça remonte petit à petit, chaque programme recharge ce dont il a besoin.'
-        Out-Raw ("`n  " + (Get-Painted "$($SYM.star) Merci d'avoir utilisé ShyzosWinFixer") + "`n")
     }
 
     # ======================================================================
@@ -329,8 +570,8 @@ namespace ShyzosWinFixer {
                 return
             }
             # Pas de grand logo ici : il s'affichera une seule fois, dans la fenêtre admin
-            if ($anim) { Out-Raw ("`n  " + (Get-Painted "$($SYM.star) ShyzosWinFixer") + "  ${DIM}v$version$RST`n") }
-            else { Write-Host ''; Write-Host "  ShyzosWinFixer v$version" -ForegroundColor Magenta }
+            if ($anim) { Out-Raw ("`n  " + (Get-Painted "$($SYM.star) SHYZOS WIN FIXER") + "  ${DIM}v$version$RST`n") }
+            else { Write-Host ''; Write-Host "  SHYZOS WIN FIXER v$version" -ForegroundColor Yellow }
             Show-Note 'info' 'Droits administrateur nécessaires : Windows va te demander une confirmation (UAC).'
             $body = "function Invoke-ShyzosWinFixer {`n" + ${function:Invoke-ShyzosWinFixer}.ToString() + "`n}`nInvoke-ShyzosWinFixer @args`n"
             $tmp = Join-Path $env:TEMP 'ShyzosWinFixer.ps1'
@@ -340,6 +581,8 @@ namespace ShyzosWinFixer {
             if ($NoWsl)   { $argList += '-NoWsl' }
             if ($NoPause) { $argList += '-NoPause' }
             if ($Plain)   { $argList += '-Plain' }
+            if ($NoStats) { $argList += '-NoStats' }
+            $argList += @('-Theme', $Theme)
             $hostExe = (Get-Process -Id $PID).Path
             try {
                 Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
@@ -352,37 +595,50 @@ namespace ShyzosWinFixer {
 
         Show-Banner
 
-        # --- Avertissement si un jeu tourne ---
+        # --- Reconnaissance ---
         $games = 'FortniteClient-Win64-Shipping','VALORANT-Win64-Shipping','cs2','RobloxPlayerBeta',
                  'r5apex','GTA5','League of Legends','RainbowSix','cod','FC25','FC26','eldenring','javaw'
-        $runningGames = Get-Process -ErrorAction SilentlyContinue | Where-Object { $games -contains $_.Name } |
-                        Select-Object -ExpandProperty Name -Unique
-        if ($runningGames) {
-            Show-Note 'warn' ("Jeu en cours ({0}) : petit lag possible quelques secondes." -f ($runningGames -join ', '))
-        }
-
+        $allProcs = @(Get-Process -ErrorAction SilentlyContinue)
+        $runningGames = $allProcs | Where-Object { $games -contains $_.Name } | Select-Object -ExpandProperty Name -Unique
+        $snap = @{}
+        foreach ($pr in $allProcs) { $snap[$pr.Id] = @($pr.ProcessName, $pr.WorkingSet64) }
         $before = Get-RamState
-        Show-Note 'info' ('RAM utilisée : {0:N1} Go sur {1:N1} Go' -f $before.Used, $before.Total)
-        if ($anim) { Out-Raw "`n" } else { Write-Host '' }
 
-        # --- WSL : vide le cache disque de Linux (sans arrêter les distributions) ---
+        $distros = @()
         if (-not $NoWsl -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
             try {
                 $all     = @((& wsl.exe -l -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
-                $running = @((& wsl.exe -l --running -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } |
+                $distros = @((& wsl.exe -l --running -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } |
                              Where-Object { $_ -and ($all -contains $_) })
-                foreach ($d in $running) {
-                    $code = Invoke-Step "WSL ($d) : vidage du cache Linux" {
-                        param($distro)
-                        & wsl.exe -d $distro -u root -- sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>$null | Out-Null
-                        $LASTEXITCODE
-                    } $d
-                    if ($code -eq 0) { Complete-Step 'ok' "WSL ($d) : cache vidé" }
-                    else { Complete-Step 'warn' "WSL ($d) : impossible de vider le cache" }
-                }
-            } catch {
-                Complete-Step 'warn' 'WSL : ignoré (erreur pendant la détection)'
-            }
+            } catch { $distros = @() }
+        }
+
+        $targetsTxt = $T.rowVals[2] -f $allProcs.Count
+        if ($distros.Count -gt 0) { $targetsTxt += " · WSL ($($distros -join ', '))" }
+        $wave = (Get-Stats).runs + 1
+        $zone = if ($Theme -eq 'zombie') { "$($T.rowVals[0]) · vague $wave" } else { $T.rowVals[0] }
+        Show-Briefing @(
+            @($T.rows[0], $zone, "$AMB$BOLD"),
+            @($T.rows[1], $T.rowVals[1], $WHT),
+            @($T.rows[2], $targetsTxt, $WHT),
+            @($T.rows[3], ($T.rowVals[3] -f $before.Used, $before.Total), $WHT),
+            @($T.rows[4], (Get-Date -Format 'HH:mm:ss'), $WHT)
+        )
+        if ($runningGames) {
+            Show-Note 'warn' ("jeu détecté ({0}) : petit lag possible quelques secondes" -f ($runningGames -join ', '))
+        }
+        Show-Countdown
+        $opWatch = [Diagnostics.Stopwatch]::StartNew()
+
+        # --- WSL : vide le cache disque de Linux (sans arrêter les distributions) ---
+        foreach ($dist in $distros) {
+            $code = Invoke-Step "WSL ($dist) : vidage du cache Linux" {
+                param($distro)
+                & wsl.exe -d $distro -u root -- sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>$null | Out-Null
+                $LASTEXITCODE
+            } $dist
+            if ($code -eq 0) { Complete-Step 'ok' "WSL ($dist) : cache vidé" }
+            else { Complete-Step 'warn' "WSL ($dist) : impossible de vider le cache" }
         }
 
         # --- Appel direct à Windows (même fonction que RAMMap) ---
@@ -412,17 +668,18 @@ namespace ShyzosWinFixer {
             else { Complete-Step 'warn' ('Cache en attente : refusé (code 0x{0:X8})' -f [int]$status) }
         }
 
-        # --- Attend que Windows ait fini de libérer (stable 3 mesures, 30 s max) ---
+        # --- Stabilisation : attend que la RAM arrête de descendre (2 mesures de suite, 12 s max) ---
+        #     (si un jeu tourne, la RAM remonte vite : on ne cherche pas une valeur parfaitement stable)
         $last = (Get-RamState).Used
         $stable = 0
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $nextPoll = 600
         $i = 0
-        if (-not $anim) { Write-Host '  > Libération de la mémoire' -ForegroundColor Cyan }
-        while ($stable -lt 3 -and $sw.ElapsedMilliseconds -lt 30000) {
+        if (-not $anim) { Write-Host '  [ .. ] Stabilisation de la mémoire' }
+        while ($stable -lt 2 -and $sw.ElapsedMilliseconds -lt 12000) {
             if ($anim) {
-                $label = 'Libération de la mémoire  ' + (Get-Bar ($last / $before.Total) 24) + ('  {0,5:N1} Go' -f $last)
-                Out-Raw ("`r  " + $GRAD[($i * 4) % 64] + $SPIN[$i % $SPIN.Count] + "$RST $label$E[K")
+                Out-Raw ("`r  $DRK[$RST $AMB" + $SPIN[$i % $SPIN.Count] + "$RST  $DRK]$RST Stabilisation  " +
+                         (Get-Bar ($last / $before.Total) 24) + ('  {0,5:N1} Go' -f $last) + "$ESC[K")
                 Start-Sleep -Milliseconds 80
                 $i++
             } else {
@@ -430,16 +687,51 @@ namespace ShyzosWinFixer {
             }
             if ($sw.ElapsedMilliseconds -ge $nextPoll) {
                 $now = (Get-RamState).Used
-                if ([math]::Abs($last - $now) -lt 0.1) { $stable++ } else { $stable = 0 }
+                if (($last - $now) -lt 0.1) { $stable++ } else { $stable = 0 }   # ne descend plus (ou remonte)
                 $last = $now
                 $nextPoll = $sw.ElapsedMilliseconds + 600
             }
         }
         Complete-Step 'ok' 'Mémoire stabilisée'
+        $opWatch.Stop()
 
+        # --- Bilan : qui a libéré quoi ---
         $after = Get-RamState
-        if ($anim) { Out-Raw "`n" }
-        Show-Result $before $after
+        $freedByName = @{}
+        $count = 0
+        foreach ($pr in @(Get-Process -ErrorAction SilentlyContinue)) {
+            if ($snap.ContainsKey($pr.Id)) {
+                $delta = ($snap[$pr.Id][1] - $pr.WorkingSet64) / 1MB
+                if ($delta -gt 1) {
+                    $count++
+                    $freedByName[$pr.ProcessName] = [double]$freedByName[$pr.ProcessName] + $delta
+                }
+            }
+        }
+        $targets = @($freedByName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 6 |
+                     ForEach-Object { [pscustomobject]@{ Name = $_.Key; Freed = $_.Value } })
+
+        $gain = $before.Used - $after.Used
+        $palette = @{ red = $RED; org = $ORG; acc = $AMB; ok = $GRN; dim = $DIM }
+        foreach ($sk in $T.streaks) {
+            if ($gain -ge $sk[0]) { $streak = $sk[1]; $streakColor = $palette[$sk[2]]; break }
+        }
+
+        Show-Killfeed $targets $count
+        Show-MissionBanner $streak $streakColor
+        Show-Report $before $after $count $opWatch.Elapsed.TotalSeconds
+        $st = Update-Stats $gain
+        Show-Rank $st
+
+        if ($anim) {
+            Out-Raw ("`n  $DIM$ARW Normal : ça remonte petit à petit, chaque programme recharge ce dont il a besoin.$RST`n")
+            Out-Raw ("  $DIM$ARW " + ($T.total -f $st.Runs, $st.TotalGB) + "$RST`n")
+            Out-Raw ("`n  " + (Get-Painted $T.outro) + "`n")
+        } else {
+            Write-Host ''
+            Write-Host '  Normal : ça remonte petit à petit, chaque programme recharge ce dont il a besoin.' -ForegroundColor DarkGray
+            Write-Host ('  ' + ($T.total -f $st.Runs, $st.TotalGB)) -ForegroundColor DarkGray
+        }
         Wait-Key
     }
     finally {
