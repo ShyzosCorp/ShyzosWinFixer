@@ -28,7 +28,7 @@ function Invoke-ShyzosWinFixer {
         [switch]$Elevated
     )
 
-    $version = '1.3.0'
+    $version = '1.3.1'
 
     # ======================================================================
     #  Fonctions natives (Windows)
@@ -90,6 +90,34 @@ namespace ShyzosWinFixer {
     }
 }
 '@
+    }
+
+    # Mode "Édition rapide" de la console : un clic dans la fenêtre met le script en pause.
+    # On le coupe pendant l'exécution, puis on remet le réglage d'origine.
+    if (-not ('ShyzosWinFixer.QuickEdit' -as [type])) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace ShyzosWinFixer {
+    public static class QuickEdit {
+        [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int handle);
+        [DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+        [DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr handle, uint mode);
+        public static long Disable() {
+            IntPtr h = GetStdHandle(-10);
+            uint mode;
+            if (!GetConsoleMode(h, out mode)) return -1;
+            SetConsoleMode(h, (mode & ~0x40u) | 0x80u);   // retire ENABLE_QUICK_EDIT_MODE
+            return mode;
+        }
+        public static void Restore(long mode) {
+            if (mode >= 0) SetConsoleMode(GetStdHandle(-10), (uint)mode);
+        }
+    }
+}
+'@
+        } catch { }
     }
 
     # ======================================================================
@@ -312,6 +340,43 @@ namespace ShyzosWinFixer {
         }
     }
 
+    # --- WSL ---
+    # wsl.exe existe sur tous les Windows, même sans WSL. Sans WSL, il affiche
+    # "Appuyez sur une touche pour installer..." et attend 60 s : on ne l'appelle donc
+    # que si une distribution est enregistrée, toujours sans clavier et avec un délai max.
+    function Get-WslDistros {
+        $names = @()
+        try {
+            $names = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -ErrorAction Stop |
+                       ForEach-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DistributionName } |
+                       Where-Object { $_ })
+        } catch { }
+        $names
+    }
+
+    $WSL_RUN = {
+        param([string]$arguments, [int]$timeoutMs)
+        $exe = Join-Path $env:SystemRoot 'System32\wsl.exe'
+        if (-not (Test-Path $exe)) { return $null }
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = $arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = [Text.Encoding]::Unicode
+        $p = [Diagnostics.Process]::Start($psi)
+        try {
+            $p.StandardInput.Close()
+            $out = $p.StandardOutput.ReadToEndAsync()
+            $err = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit($timeoutMs)) { try { $p.Kill() } catch { }; return $null }
+            [pscustomobject]@{ Code = $p.ExitCode; Out = $out.Result }
+        } finally { $p.Dispose() }
+    }
+
     function Get-RamState {
         $os = Get-CimInstance Win32_OperatingSystem
         $totalGB = $os.TotalVisibleMemorySize / 1MB
@@ -330,6 +395,8 @@ namespace ShyzosWinFixer {
     #  Programme
     # ======================================================================
     $cursor = $null
+    $quickEdit = -1
+    try { if ('ShyzosWinFixer.QuickEdit' -as [type]) { $quickEdit = [ShyzosWinFixer.QuickEdit]::Disable() } } catch { }
     if ($anim) { try { $cursor = [Console]::CursorVisible; [Console]::CursorVisible = $false } catch { } }
     try {
         # --- Droits administrateur : on se relance tout seul en admin si besoin ---
@@ -374,12 +441,17 @@ namespace ShyzosWinFixer {
         $before = Get-RamState
 
         $distros = @()
-        if (-not $NoWsl -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-            try {
-                $all     = @((& wsl.exe -l -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
-                $distros = @((& wsl.exe -l --running -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } |
-                             Where-Object { $_ -and ($all -contains $_) })
-            } catch { $distros = @() }
+        if (-not $NoWsl) {
+            $all = @(Get-WslDistros)
+            if ($all.Count -gt 0) {
+                try {
+                    $r = & $WSL_RUN '-l --running -q' 5000
+                    if ($r -and $r.Out) {
+                        $distros = @(($r.Out -replace "`0", '') -split "`r?`n" | ForEach-Object { $_.Trim() } |
+                                     Where-Object { $_ -and ($all -contains $_) })
+                    }
+                } catch { $distros = @() }
+            }
         }
 
         if ($runningGames) {
@@ -391,10 +463,10 @@ namespace ShyzosWinFixer {
         # --- WSL : vide le cache disque de Linux (sans arrêter les distributions) ---
         foreach ($dist in $distros) {
             $code = Invoke-Step "WSL ($dist) : vidage du cache Linux" {
-                param($distro)
-                & wsl.exe -d $distro -u root -- sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>$null | Out-Null
-                $LASTEXITCODE
-            } $dist
+                param($job)
+                $r = & ([scriptblock]::Create($job[1])) ('-d {0} -u root -- sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"' -f $job[0]) 20000
+                if ($r) { $r.Code } else { -1 }
+            } @($dist, $WSL_RUN.ToString())
             if ($code -eq 0) { Complete-Step 'ok' "WSL ($dist) : cache vidé" }
             else { Complete-Step 'warn' "WSL ($dist) : impossible de vider le cache" }
         }
@@ -467,6 +539,7 @@ namespace ShyzosWinFixer {
         Wait-Key
     }
     finally {
+        try { if ($quickEdit -ge 0) { [ShyzosWinFixer.QuickEdit]::Restore($quickEdit) } } catch { }
         if ($anim) {
             Out-Raw $RST
             try { if ($null -ne $cursor) { [Console]::CursorVisible = $cursor } else { [Console]::CursorVisible = $true } } catch { }
