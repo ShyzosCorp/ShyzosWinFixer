@@ -28,7 +28,7 @@ function Invoke-ShyzosWinFixer {
         [switch]$Elevated
     )
 
-    $version = '1.1.0'
+    $version = '1.1.1'
 
     # ======================================================================
     #  Fonctions natives (Windows)
@@ -147,7 +147,8 @@ namespace ShyzosWinFixer {
     }
 
     function Get-Bar([double]$frac, [int]$width) {
-        $frac = [math]::Min(1, [math]::Max(0, $frac))
+        # 0.0 / 1.0 (et pas 0 / 1) : sinon PowerShell choisit la version "entiers" de Min/Max et arrondit
+        $frac = [math]::Min([double]1.0, [math]::Max([double]0.0, $frac))
         $full = [int][math]::Round($frac * $width)
         $sb = New-Object Text.StringBuilder
         for ($i = 0; $i -lt $width; $i++) {
@@ -211,7 +212,10 @@ namespace ShyzosWinFixer {
             $i++
         }
         try { $out = $ps.EndInvoke($handle) } finally { $ps.Dispose() }
-        if ($out -and $out.Count -gt 0) { return $out[$out.Count - 1] }
+        # Attention : une collection qui contient seulement 0 est "fausse" en PowerShell,
+        # donc on teste $null et Count explicitement.
+        if ($null -ne $out -and $out.Count -gt 0) { return $out[$out.Count - 1] }
+        return $null
     }
 
     function Complete-Step([string]$state, [string]$text) {
@@ -269,35 +273,37 @@ namespace ShyzosWinFixer {
         }
         $W = 46
         $border = "$E[38;2;70;76;105m"
+        # Coins arrondis seulement dans Windows Terminal (la console classique ne les affiche pas)
+        if ($wt) { $cTL = '╭'; $cTR = '╮'; $cBL = '╰'; $cBR = '╯' } else { $cTL = '┌'; $cTR = '┐'; $cBL = '└'; $cBR = '┘' }
         $steps = 22
         for ($f = 0; $f -le $steps; $f++) {
-            $t = $f / $steps
-            $e = 1 - [math]::Pow(1 - $t, 3)                      # easeOutCubic
-            $bv = '{0,5:N1}' -f ($before.Used * $e)
-            $av = '{0,5:N1}' -f ($after.Used * $e)
-            $gv = '{0:N1}' -f ([math]::Max(0, $gain) * $e)
+            # Attention : pas de variable "$e" ici, PowerShell ne distingue pas $e de $E (caractère d'échappement)
+            $ease = 1 - [math]::Pow(1 - ($f / $steps), 3)        # easeOutCubic
+            $bv = '{0,5:N1}' -f ($before.Used * $ease)
+            $av = '{0,5:N1}' -f ($after.Used * $ease)
+            $gv = '{0:N1}' -f ([math]::Max([double]0.0, [double]$gain) * $ease)
             $rows = @(
                 @(('  Avant    ' + ('x' * 24) + "  $bv Go"),
-                  ("  ${DIM}Avant$RST    " + (Get-Bar (($before.Used / $before.Total) * $e) 24) + "  $bv Go")),
+                  ("  ${DIM}Avant$RST    " + (Get-Bar (($before.Used / $before.Total) * $ease) 24) + "  $bv Go")),
                 @(('  Après    ' + ('x' * 24) + "  $av Go"),
-                  ("  ${BOLD}Après$RST    " + (Get-Bar (($after.Used / $after.Total) * $e) 24) + "  $BOLD$av$RST Go")),
+                  ("  ${BOLD}Après$RST    " + (Get-Bar (($after.Used / $after.Total) * $ease) 24) + "  $BOLD$av$RST Go")),
                 @('', '')
             )
             if ($gain -gt 0.05) {
                 $rows += ,@(("  $($SYM.star) Libéré   + $gv Go"),
-                            ("  " + $GRAD[[int]($e * 63)] + "$($SYM.star)$RST ${BOLD}Libéré$RST   $GRN$BOLD+ $gv Go$RST"))
+                            ("  " + $GRAD[[int]($ease * 63)] + "$($SYM.star)$RST ${BOLD}Libéré$RST   $GRN$BOLD+ $gv Go$RST"))
             } else {
                 $rows += ,@(("  $($SYM.star) Rien de plus à libérer pour l'instant"),
                             ("  $YEL$($SYM.star) Rien de plus à libérer pour l'instant$RST"))
             }
             $sb = New-Object Text.StringBuilder
             if ($f -gt 0) { [void]$sb.Append("$E[$($rows.Count + 2)A") }
-            [void]$sb.Append("`r  $border╭" + ('─' * $W) + "╮$RST$E[K`n")
+            [void]$sb.Append("`r  $border$cTL" + ('─' * $W) + "$cTR$RST$E[K`n")
             foreach ($row in $rows) {
                 $padding = ' ' * [math]::Max(0, $W - $row[0].Length)
                 [void]$sb.Append("`r  $border│$RST" + $row[1] + $padding + "$border│$RST$E[K`n")
             }
-            [void]$sb.Append("`r  $border╰" + ('─' * $W) + "╯$RST$E[K`n")
+            [void]$sb.Append("`r  $border$cBL" + ('─' * $W) + "$cBR$RST$E[K`n")
             Out-Raw $sb.ToString()
             Start-Sleep -Milliseconds 28
         }
@@ -312,17 +318,19 @@ namespace ShyzosWinFixer {
     $cursor = $null
     if ($anim) { try { $cursor = [Console]::CursorVisible; [Console]::CursorVisible = $false } catch { } }
     try {
-        Show-Banner
-
         # --- Droits administrateur : on se relance tout seul en admin si besoin ---
         $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
                    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         if (-not $isAdmin) {
             if ($Elevated) {
+                Show-Banner
                 Complete-Step 'err' "Impossible d'obtenir les droits administrateur."
                 Wait-Key
                 return
             }
+            # Pas de grand logo ici : il s'affichera une seule fois, dans la fenêtre admin
+            if ($anim) { Out-Raw ("`n  " + (Get-Painted "$($SYM.star) ShyzosWinFixer") + "  ${DIM}v$version$RST`n") }
+            else { Write-Host ''; Write-Host "  ShyzosWinFixer v$version" -ForegroundColor Magenta }
             Show-Note 'info' 'Droits administrateur nécessaires : Windows va te demander une confirmation (UAC).'
             $body = "function Invoke-ShyzosWinFixer {`n" + ${function:Invoke-ShyzosWinFixer}.ToString() + "`n}`nInvoke-ShyzosWinFixer @args`n"
             $tmp = Join-Path $env:TEMP 'ShyzosWinFixer.ps1'
@@ -335,12 +343,14 @@ namespace ShyzosWinFixer {
             $hostExe = (Get-Process -Id $PID).Path
             try {
                 Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -ErrorAction Stop | Out-Null
-                Complete-Step 'ok' 'Lancé dans une nouvelle fenêtre administrateur.'
+                Complete-Step 'ok' 'La suite se passe dans la fenêtre administrateur qui vient de s''ouvrir.'
             } catch {
                 Complete-Step 'err' 'Confirmation UAC refusée : rien n''a été modifié.'
             }
             return
         }
+
+        Show-Banner
 
         # --- Avertissement si un jeu tourne ---
         $games = 'FortniteClient-Win64-Shipping','VALORANT-Win64-Shipping','cs2','RobloxPlayerBeta',
@@ -384,6 +394,11 @@ namespace ShyzosWinFixer {
         [void][ShyzosWinFixer.Mem]::EnablePrivilege('SeIncreaseQuotaPrivilege')
 
         $status = Invoke-Step 'Réduction de la mémoire des processus' { param($x) [ShyzosWinFixer.Mem]::Command(2) } $null
+        if ($null -eq $status) {
+            Complete-Step 'err' 'Pas de réponse de Windows pour la réduction de mémoire.'
+            Wait-Key
+            return
+        }
         if ($status -ne 0) {
             Complete-Step 'err' ('Windows a refusé la commande (code 0x{0:X8}).' -f [int]$status)
             Wait-Key
